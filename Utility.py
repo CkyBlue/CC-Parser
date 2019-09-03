@@ -10,6 +10,23 @@ defaultReturnStack = {shortHand: "r", properName: "return"}
 
 # Config
 key_for_fetching_return = "*RETURN"
+addTypeBoxing = False
+
+def resolveAttrFromContent(contentText):
+    attributes = {}
+    attributePattern = re.compile(r"\s*(.*)\s*=\s*\"(.*)\"\s*", re.DOTALL)
+
+    for attribute in contentText.split(","):
+        attribute = attribute.strip()
+        attributeMatch = attributePattern.search(attribute)
+
+        if attributeMatch is not None:
+            attributeType = attributeMatch.group(1).strip()
+            attributeValue = attributeMatch.group(2).strip()
+
+            attributes[attributeType] = attributeValue
+
+    return attributes
 
 class DataTypeMap:
     int = "INT"
@@ -32,6 +49,11 @@ class DataTypeMap:
                       str: "String.valueOf",
                       float: "Float.valueOf"}
 
+    __defaults = {int: "0",
+                      bool: "false",
+                      str: '""',
+                      float: "0.0f"}
+
     @staticmethod
     def getKeys():
         return DataTypeMap.__typeDimMap.keys()
@@ -45,7 +67,12 @@ class DataTypeMap:
     @staticmethod
     def mapDimType(key):
         DataTypeMap.__validateKey(key)
-        return DataTypeMap.__typeDimMap[key]
+        return DataTypeMap.__typeDimMap[key]    \
+
+    @staticmethod
+    def mapDefaults(key):
+        DataTypeMap.__validateKey(key)
+        return DataTypeMap.__defaults[key]
 
     @staticmethod
     def mapGetter(key):
@@ -155,17 +182,21 @@ class TemplateBuilders:
     destroy_local_data = "destroyLocalData"
     input_type = "inputType"
     posting_return = "postingReturn"
+    posting_input = "postingInput"
 
     cmd_id = "cmdId"
     execution_overhead = "executionOverHead"
 
     __components = {pass_args: void + " " + pass_args + "() {{ {" + pass_args + "} }}",
                     build_args: void + " " + build_args + "() {{ {" + build_args + "} }}",
-                    execution: void + " " + execution + "() {{ {" + execution_overhead + "} {" + execution + "} }}",
+                    execution: void + " " + execution + "() {{ {" + execution_overhead + "}\n{" + execution
+                               + "} }}",
                     evaluate: "boolean " + evaluate + "() {{ return {" + evaluate + "} }}",
                     build_local_data: void + " " + build_local_data + "() {{ {" + build_local_data + "} }}",
-                    posting_return: void + " " + execution + "() {{ {" + execution_overhead + "} {" + posting_return +
-                                    "} {" + execution + "} }}",
+                    posting_return: void + " " + execution + "() {{ {" + execution_overhead + "}\n{" +
+                                    posting_return + "}\n{" + execution + "} }}",
+                    posting_input: void + " " + execution + "() {{ {" + execution_overhead + "}\n{" +
+                                   posting_input + "}\n{" + execution + "} }}",
                     destroy_local_data: void + " " + destroy_local_data + "() {{ {" + destroy_local_data + "} }}"}
 
     __classMap = {Command.call: "Call",
@@ -209,7 +240,8 @@ class TemplateBuilders:
                    TemplateBuilders.cmd_id + "} = new " + \
                    inputCmdType + '("{' + TemplateBuilders.cmd_id + '}", {' + TemplateBuilders.input_type + '}) {{'
 
-        template += "\n" + TemplateBuilders.get_template_method(TemplateBuilders.execution) + "\n"
+        template += "\n" + TemplateBuilders.get_template_method(TemplateBuilders.posting_input) + "\n"
+
         template += "}};"
         return "\n" + template + "\n"
 
@@ -237,7 +269,7 @@ class Templates:
 
         Command.func: TemplateBuilders.buildDefaultTemplate(
             Command.func,
-            [TemplateBuilders.execution,
+            [TemplateBuilders.posting_return,
              TemplateBuilders.build_local_data]),
 
         Command.doIf: TemplateBuilders.buildDefaultTemplate(
@@ -271,7 +303,7 @@ class Templates:
 
         Command.impasse: TemplateBuilders.buildDefaultTemplate(
             Command.impasse,
-            [])
+            [TemplateBuilders.execution])
     }
 
     @staticmethod
@@ -290,8 +322,8 @@ class Data:
         self.varStackKeys = {}
         self.highLighterKeys = {}
 
+        # Is used for automatic pushing and popping in function calls.
         self.defaultVarStack = None
-        # Is used for automatic pushing and popping in funciton calls.
 
         # Proper-Name -> VarStack
         self.varStacks = {}
@@ -302,6 +334,8 @@ class Data:
 
         self.funcs = {}
         self.lastCalledFunc = None
+
+        self.logs = []
 
         self.dir = ""
 
@@ -502,7 +536,10 @@ class VarParser:
 
     @staticmethod
     def inflateSetVar(varName, varType, value, stack):
-        typeCorrectedValue = DataTypeMap.mapConverter(varType) + "({})".format(value)
+        typeCorrectedValue = value
+        if addTypeBoxing:
+            typeCorrectedValue = DataTypeMap.mapConverter(varType) + "({})".format(value)
+
         return VarParser.inflateGetVarsStack(stack) + ".set(\"{}\", {});".format(varName, typeCorrectedValue)
 
     @staticmethod
@@ -540,7 +577,9 @@ def getAtLevel(startChar, endChar, s, requiredLevel):
             # print("Closing {} at {}".format(openCount, i))
 
             if openCount not in bound.keys():
-                raise Exception("Closing char at position {} doesn't have a matching opening.".format(i))
+                textArea = (s[i - 10 : i+10])
+                raise Exception("Closing char at position {} doesn't have a matching opening. '{}'".format(
+                    i, textArea))
 
             bound[openCount][len(bound[openCount]) - 1].append(i + 1)
 
@@ -657,7 +696,9 @@ class NodesParser:
 
     @staticmethod
     def inflateSetNodes(nodesName, col, colType, index, value):
-        typeCorrectedValue = DataTypeMap.mapConverter(colType) + "({})".format(value)
+        typeCorrectedValue = value
+        if addTypeBoxing:
+            typeCorrectedValue = DataTypeMap.mapConverter(colType) + "({})".format(value)
 
         return NodesParser.inflateGetNode(nodesName) + ".set(\"{}\", {}, {});".format(col,
                                                                                       index,
@@ -680,37 +721,49 @@ class CodeUnitParser:
     def evalHighlight(data, expression):
         codeUnitKey, values = expression.split("@")
 
-        codeUnitKey = data.resolveCodeUnitKey(codeUnitKey)
+        codeUnitKey, values = codeUnitKey.strip(), values.strip()
 
-        values = values.strip()
-        if values == "*":
-            lineCount = data.getCodeUnit(codeUnitKey).lineCount
-            values = "1"
-            if lineCount > 1:
-                values += " - {}".format(lineCount)
-
-        if values == "!":
-            statement = CodeUnitParser.inflateGetCodeUnit(codeUnitKey) + \
-                        ".highlight(null)"
-
+        codeUnitKeys = []
+        if codeUnitKey != "*":
+            codeUnitKeys.append(data.resolveCodeUnitKey(codeUnitKey))
         else:
-            lineNos = []
-            valRanges = values.split(",")
-            for varRange in valRanges:
-                if "-" in varRange:
-                    start, end = varRange.split("-")
-                    start, end = int(start), int(end)
+            for unitKeyProperName in data.highLighterKeys.values():
+                codeUnitKeys.append(unitKeyProperName)
 
-                    for i in range(start, end + 1):
-                        lineNos.append(i)
-                else:
-                    lineNos.append(int(varRange))
+        statement = ""
+        for codeUnitKey in codeUnitKeys:
 
-            lineNos = set([str(lineNo) for lineNo in lineNos])
-            lineNoStatement = ", ".join(lineNos)
+            values = values.strip()
+            if values == "*":
+                lineCount = data.getCodeUnit(codeUnitKey).lineCount
+                values = "1"
+                if lineCount > 1:
+                    values += " - {}".format(lineCount)
 
-            statement = CodeUnitParser.inflateGetCodeUnit(codeUnitKey) + \
-                        ".highlight(new int[]{{ {} }});".format(lineNoStatement)
+            if values == "!":
+                statement = CodeUnitParser.inflateGetCodeUnit(codeUnitKey) + \
+                            ".highlight(null)"
+
+            else:
+                lineNos = []
+                valRanges = values.split(",")
+                for varRange in valRanges:
+                    if "-" in varRange:
+                        start, end = varRange.split("-")
+                        start, end = int(start), int(end)
+
+                        for i in range(start, end + 1):
+                            lineNos.append(i)
+                    else:
+                        lineNos.append(int(varRange))
+
+                lineNos = set([str(lineNo) for lineNo in lineNos])
+                lineNoStatement = ", ".join(lineNos)
+
+                statement += CodeUnitParser.inflateGetCodeUnit(codeUnitKey) + \
+                            ".highlight(new int[]{{ {} }})".format(lineNoStatement)
+
+            statement += ";\n"
 
         return statement
 
@@ -724,12 +777,12 @@ class CodeUnitParser:
 
             data.addCodeUnit(codeUnit)
 
-        output = "buildSourceCodeUnits(new String[]{{{}}});\n". \
+        output = "buildSourceCodeUnits(new String[]{{{}}});\n\n". \
             format(", ".join(['"' + unitName + '"' for unitName in unitNames]))
 
         for unitName in unitNames:
             srcText = data.getCodeUnit(unitName).text
-            output += CodeUnitParser.evalSetCodeUnitText(data, srcText, unitName)
+            output += CodeUnitParser.evalSetCodeUnitText(data, srcText, unitName) + "\n\n"
 
         return output + "\n"
 
@@ -782,8 +835,9 @@ class InstructionParser:
     defaultOpCode = OpCodes.eval
 
     @staticmethod
-    def getReturn(data, calledFunc):
+    def getReturn(data):
         # --- Append funcName to arg here and in func's arg poster if you need it ---
+        calledFunc = data.lastCalledFunc
 
         if calledFunc is None:
             raise Exception("No function was previously called.")
@@ -796,7 +850,6 @@ class InstructionParser:
 
         output = VarParser.inflateGetFromVars(calledFunc, type, defaultReturnStack[properName])
         return output
-
 
     @staticmethod
     def evalNodeAddress(data, exp):
@@ -811,7 +864,7 @@ class InstructionParser:
         exp = exp.strip()
 
         if exp == key_for_fetching_return:
-            return  InstructionParser.getReturn(data, )
+            return InstructionParser.getReturn(data)
 
         if len(exp) > 0 and exp[0] == "^":
             return InstructionParser.evalNodeAddress(data, exp[1:])
@@ -915,12 +968,12 @@ class InstructionParser:
     def parseInstruction(data, instruction):
         instruction = instruction.strip()
 
-        pattern = re.compile(r'\s*(.*)\s*(?<!\\):\s*(.+)\s*')
-        match = pattern.match(instruction)
+        pattern = re.compile(r"(?<!\\):")
+        match = pattern.search(instruction)
 
         try:
-            opCode = match.group(1)
-            operand = match.group(2)
+            start, end = match.span()
+            opCode, operand = instruction[:start].strip(), instruction[end:].strip()
 
             if opCode == "" or opCode.isspace():
                 opCode = InstructionParser.defaultOpCode
@@ -948,10 +1001,25 @@ class InstructionParser:
                 instruction, data.cmdCount) + str(e))
 
     @staticmethod
-    def parse(data, instructions):
+    def parse(data, instructionsText):
         output = ""
 
-        for line in instructions.split("\n"):
+        pattern = re.compile(r'(?<!\\);')
+        matches = pattern.finditer(instructionsText)
+
+        prevStart = 0
+        instructions = []
+        for match in matches:
+            start, end = match.span()
+            instructions.append(instructionsText[prevStart:start])
+            prevStart = end
+
+        instructions.append(instructionsText[prevStart:])
+
+        stripPattern = re.compile(r"\s*(.*)\s*", re.DOTALL)
+        instructions = [stripPattern.sub(lambda m: m.group(1), instruction) for instruction in instructions]
+
+        for line in instructions:
             if line == "" or line.isspace():
                 output += "\n"
                 continue
@@ -971,24 +1039,64 @@ class InstructionParser:
 
 class LogParser:
     @staticmethod
-    def eval(data, log):
+    def eval(data, logText):
+        logInjPattern = re.compile(r"(?<!\\)<([\w_,\s-]*)\s*:\s*([\w_\",=\s-]*)(?<!\\)>")
+
         while True:
-            spans = getAtLevel("<", ">", log, 1)
+            match = logInjPattern.search(logText)
+            if match is None:
+                break
+
+            name, log_id = match.group(1).split(",")
+
+            name = name.strip()
+            log_id = log_id.strip()
+
+            content = match.group(2)
+            attributes = resolveAttrFromContent(content)
+
+            for log in data.logs:
+                if log.get('name') == name and log.get('id') == log_id:
+                    text = log.text
+                    break
+            else:
+                raise Exception("Log for name: '{}', id: '{}' is not availables.".format(name, log_id))
+
+            stripPattern = re.compile(r"\s*(.*)\s*", re.DOTALL)
+            text = stripPattern.sub(lambda m: m.group(1), text)
+
+            text = re.sub(r"\n", r"\<br\>", text)
+
+            start, end = match.span()
+            try:
+                logText = logText[:start] + text.format(**attributes) + logText[end:]
+            except Exception as e:
+                raise Exception("Error when parsing log '{}'\n".format(text) + str(e))
+
+        print("Log : {}".format(logText))
+
+        while True:
+            spans = getAtLevel("<", ">", logText, 1)
             if spans is None:
                 break
             else:
                 start, end = spans.pop()
 
-                currentExp = log[start:end]
+                currentExp = logText[start:end]
                 evaluation = InstructionParser.evaluateExpression(data, currentExp)[:-1]
 
-                log = log[:start] + '" + {} + "'.format(evaluation) + log[end:]
+                logText = logText[:start] + '" + {} + "'.format(evaluation) + logText[end:]
 
-        return log
+        logText = re.sub(r"(?<!\\)\[(.*?)(?<!\\)\]", lambda m: r"\<" + m.group(1) + r"\>", logText)
+
+        logText = re.sub(r"\\>", r">", logText)
+        logText = re.sub(r"\\<", r"<", logText)
+
+        return logText
 
     @staticmethod
     def inflateLog(data, log):
-        return "log(\"{}\");".format(log)
+        return "log(\"{}\", false);".format(log)
 
     @staticmethod
     def inflateOutput(data, log):

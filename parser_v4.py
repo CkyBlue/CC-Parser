@@ -1,4 +1,4 @@
-import re, os, copy
+import re, os, copy, xml.etree.ElementTree as ET
 import Utility
 
 # Configurations
@@ -16,19 +16,21 @@ defaultStack = Utility.defaultStack
 defaultArgsStack = Utility.defaultArgsStack
 defaultReturnStack = Utility.defaultReturnStack
 
-
+inputGetter = "getInputContent()"
 initPort = "__init__"
 
 defaultAlgorithmTree = "algorithmTree"
 
 class DirectiveTypes:
     src = "src"
+    log = "log"
 
 class Attributes:
     directive_type = "directive_type"
     location = "location"
     name = "name"
     handler = "handler"
+    keys = "keys"
 
 class CmdParser:
     reactiveCmdTypes = [Utility.Command.endIf, Utility.Command.elseIf, Utility.Command.ifNot] + [
@@ -98,7 +100,7 @@ class CmdParser:
     @staticmethod
     def resolve_evalutor(data, header):
         evaluatorBlock = CmdParser.extract_from_unesc_parantheses(header)
-        return Utility.InstructionParser.resolveExpression(data, evaluatorBlock)
+        return Utility.InstructionParser.resolveExpression(data, evaluatorBlock) + ";"
 
     @staticmethod
     def caseInsensitiveEqv(string_1, string_2):
@@ -106,12 +108,13 @@ class CmdParser:
 
     @staticmethod
     def splitHeaderAndContent(cmdBody):
-        pattern = re.compile(r"\s*(.*)?\s*(?<!\\):\s*(.*)\s*",
+        pattern = re.compile(r"(?<!\\):",
                              re.DOTALL)
 
         match = pattern.search(cmdBody)
         try:
-            return match.group(1), match.group(2)
+            start, end = match.span()
+            return cmdBody[:start], cmdBody[end:]
 
         except Exception as e:
             raise Exception("Body {} couldn't be split into header and content sub-sections.".format(cmdBody))
@@ -147,8 +150,7 @@ class CmdParser:
         initOverhead = Utility.InstructionParser.parse(data, initCode) + initOverhead
 
         output = ""
-        openFunc = None
-        calledFunc = None
+        openFunc = None # Used when building Return Cmds. Directs where to post returned value
 
         try:
             for match in cmdMatches:
@@ -168,21 +170,6 @@ class CmdParser:
                 type = CmdParser.validateCmdType(data, type)
 
                 body = match.group(3)
-
-                # <------*Return handling on body (header + content)
-                returnPattern = re.compile(r'(?<!\\)\*RETURN')
-                returnUsageMatch = returnPattern.search(body)
-
-                handlingReturn = returnUsageMatch is not None
-
-                if handlingReturn:
-                    returnValueFetcher = CmdParser.getReturn(data, calledFunc)
-                    body = re.sub(returnPattern, returnValueFetcher, body)
-
-                    # --- If you want to disallow *RETURN to be used in more than one subsequent command ---
-                    #     calledFunc = None
-                # ------>
-
                 content = body
 
                 cmdId = type.lower() + "_" + str(data.cmdCount)
@@ -190,8 +177,7 @@ class CmdParser:
 
                 codeContent = {}
 
-                if type != Utility.Command.impasse:
-                    codeContent[Utility.TemplateBuilders.execution_overhead] = ""
+                codeContent[Utility.TemplateBuilders.execution_overhead] = ""
                 codeContent[Utility.TemplateBuilders.cmd_id] = cmdId
 
                 tail = ""
@@ -200,9 +186,9 @@ class CmdParser:
                 if port is not None:
                     if port == initPort:
                         codeContent[Utility.TemplateBuilders.execution_overhead] += initOverhead
-                        tail += "{}.setInitializer({})".format(defaultAlgorithmTree, cmdId)
+                        tail += "{}.setInitializer({});".format(defaultAlgorithmTree, cmdId)
                     else:
-                        tail += "{}.addHeader(\"{}\", {})".format(defaultAlgorithmTree, port, cmdId)
+                        tail += "{}.addAlgorithmHeader(\"{}\", {});".format(defaultAlgorithmTree, port, cmdId)
                 # ------>
 
                 if type == Utility.Command.cmd:
@@ -231,6 +217,15 @@ class CmdParser:
 
                     if returnType not in Utility.Func.returnTypes:
                         raise Exception("Function return type '{}' is not recognized.".format(returnType))
+
+                    postingReturn = ""
+                    if returnType != Utility.Func.void:
+                        returnVal = Utility.DataTypeMap.mapDefaults(returnType)
+                        postingReturn = Utility.VarParser.inflateSetVar(funcIdentifier, returnType,
+                                                                        returnVal,
+                                                                        defaultReturnStack[properName])
+
+                    codeContent[Utility.TemplateBuilders.posting_return] = postingReturn
 
                     parameterNames = []
                     parameterTypes = []
@@ -280,7 +275,7 @@ class CmdParser:
                     funcIdentifier = header.strip()
                     data.validateFuncExists(funcIdentifier)
 
-                    calledFunc = funcIdentifier
+                    data.lastCalledFunc = funcIdentifier
 
                     func = data.funcs[funcIdentifier]
 
@@ -332,15 +327,20 @@ class CmdParser:
                     func = data.funcs[openFunc]
 
                     header, content = CmdParser.splitHeaderAndContent(body)
-                    returnVal = CmdParser.extract_from_unesc_parantheses(header)
+                    returnVal = Utility.InstructionParser.resolveExpression(
+                        data, header.strip()).strip()
 
                     returnType = func.returnType
 
                     postingReturn = ""
                     if returnType != Utility.Func.void:
+                        if returnVal == "":
+                            returnVal = Utility.DataTypeMap.mapDefaults(returnType)
+
                         postingReturn = Utility.VarParser.inflateSetVar(func.identifier, returnType,
                                                                         returnVal,
                                                                         defaultReturnStack[properName])
+
 
                     codeContent[Utility.TemplateBuilders.posting_return] = postingReturn
 
@@ -348,7 +348,24 @@ class CmdParser:
                     # Parsing input type and handling name of input is not being done ~ Here i am
 
                     header, content = CmdParser.splitHeaderAndContent(body)
-                    codeContent[Utility.TemplateBuilders.input_type] = header.strip()
+                    inputType, inputIdentifier = header.strip().split()
+
+                    if inputType not in Utility.DataTypeMap.getKeys():
+                        raise Exception("Input type '{}' is not recognized.".format(
+                            inputType))
+
+                    processedInputType = Utility.DataTypeMap.mapDimType(inputType)
+
+                    inputRetriever = inputGetter
+                    if not Utility.addTypeBoxing:
+                        inputRetriever = Utility.DataTypeMap.mapConverter(inputType) + "({})".format(
+                            inputRetriever)
+
+                    setDir = "{}, {}".format(inputIdentifier, "{}".format(inputRetriever))
+                    postingInput = Utility.InstructionParser.evalSet(data, setDir)
+
+                    codeContent[Utility.TemplateBuilders.input_type] = processedInputType
+                    codeContent[Utility.TemplateBuilders.posting_input] = postingInput
 
                 if type != Utility.Command.impasse:
                     codeContent[Utility.TemplateBuilders.execution] = CmdParser.resolve_instructions(data,
@@ -361,9 +378,10 @@ class CmdParser:
                             Utility.TemplateBuilders.execution_overhead] += Utility.InstructionParser.evalHighlight(
                             data, "{} @ {} - {}".format(carbonCode[shortHand], start, end)
                         ) + "\n"
+                else:
+                    codeContent[Utility.TemplateBuilders.execution] = ""
 
                 template = Utility.Templates.getTemplate(type)
-                # print(template, codeContent)
                 output += template.format(**codeContent)
 
                 if tail != "":
@@ -554,25 +572,26 @@ class CmdParser:
 
         return Utility.CodeUnit(shortHand, properName, srcText)
 
+    def logDirective(data, attributes):
+        location = attributes[Attributes.location]
+
+        srcFile = open(os.path.join(data.dir, location), "r")
+        srcText = srcFile.read()
+        srcFile.close()
+
+        logTree = ET.fromstring(srcText)
+        logs = logTree.findall('log')
+
+        return logs
+
     def preProcess(data, code):
-        directivePattern = re.compile(r"<~\s*(.*)\s*~>", re.DOTALL)
-        attributePattern = re.compile(r"\s*(.*)\s*=\s*\"(.*)\"\s*", re.DOTALL)
+        directivePattern = re.compile(r"<~\s*([^~]*)?\s*~>", re.DOTALL)
 
         directives = []
         for directiveMatch in directivePattern.finditer(code):
+
             contentText = directiveMatch.group(1)
-
-            attributes = {}
-            for attribute in contentText.split(","):
-                attribute = attribute.strip()
-                attributeMatch = attributePattern.search(attribute)
-
-                if attributeMatch is not None:
-                    attributeType = attributeMatch.group(1).strip()
-                    attributeValue = attributeMatch.group(2).strip()
-
-                    attributes[attributeType] = attributeValue
-
+            attributes = Utility.resolveAttrFromContent(contentText)
             directives.append(attributes)
 
         return directives
@@ -593,11 +612,14 @@ class CmdParser:
         for directive in directives:
             try:
                 directiveType = directive[Attributes.directive_type]
+                attributes = directive
 
                 if CmdParser.caseInsensitiveEqv(directiveType, DirectiveTypes.src):
-                    attributes = directive
                     codeUnit = CmdParser.srcDirective(data, attributes)
                     codeUnits.append(codeUnit)
+
+                if CmdParser.caseInsensitiveEqv(directiveType, DirectiveTypes.log):
+                    data.logs += CmdParser.logDirective(data, attributes)
 
             except Exception as e:
                 raise Exception("Something went wrong with handling directive \n\"{}\" \n".format(directive) +
@@ -625,6 +647,7 @@ data = Utility.Data()
 outputFile = open(os.path.join(dir, output_name), "w+")
 
 outputText = CmdParser.parse(data, dir)
+outputText = re.sub(r"\n\s*\n\s*\n", r"\n\n", outputText)
 print(outputText)
 outputFile.write(outputText)
 
