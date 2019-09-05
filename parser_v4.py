@@ -34,10 +34,10 @@ class Attributes:
 
 class CmdParser:
     reactiveCmdTypes = [Utility.Command.endIf, Utility.Command.elseIf, Utility.Command.ifNot] + [
-        Utility.Command.endWhile] + [Utility.Command.endFunc, Utility.Command.func] + [Utility.Command.impasse]
+        Utility.Command.endWhile] + [Utility.Command.endFunc, Utility.Command.func]
 
     allCmdTypes = reactiveCmdTypes + [Utility.Command.doIf, Utility.Command.doWhile, Utility.Command.returner,
-                                      Utility.Command.cmd, Utility.Command.call, Utility.Command.input]
+                                      Utility.Command.cmd, Utility.Command.call, Utility.Command.input] + [Utility.Command.impasse]
 
     defaultCmdType = Utility.Command.cmd
 
@@ -121,12 +121,14 @@ class CmdParser:
 
     @staticmethod
     def initializer_overhead_instructions():
+        # Todo Use a seperator constant
+
         output = ""
-        output += Utility.OpCodes.build + ": {}, {}\n".format(defaultStack[shortHand],
+        output += Utility.OpCodes.build + ": {}, {};\n".format(defaultStack[shortHand],
                                                               defaultStack[properName])
-        output += Utility.OpCodes.build + ": {}, {}\n".format(defaultReturnStack[shortHand],
+        output += Utility.OpCodes.build + ": {}, {};\n".format(defaultReturnStack[shortHand],
                                                               defaultReturnStack[properName])
-        output += Utility.OpCodes.build + ": {}, {}\n".format(defaultArgsStack[shortHand],
+        output += Utility.OpCodes.build + ": {}, {};\n".format(defaultArgsStack[shortHand],
                                                               defaultArgsStack[properName])
         return output
 
@@ -184,11 +186,17 @@ class CmdParser:
 
                 # <------ Handling port
                 if port is not None:
+                    codeContent[Utility.TemplateBuilders.execution_overhead] += \
+                        "clearOutput();\n"
+
                     if port == initPort:
                         codeContent[Utility.TemplateBuilders.execution_overhead] += initOverhead
                         tail += "{}.setInitializer({});".format(defaultAlgorithmTree, cmdId)
                     else:
                         tail += "{}.addAlgorithmHeader(\"{}\", {});".format(defaultAlgorithmTree, port, cmdId)
+
+                    codeContent[Utility.TemplateBuilders.execution_overhead] += \
+                        "\n" + Utility.VarParser.inflatePushVarsStack(defaultStack[properName])
                 # ------>
 
                 if type == Utility.Command.cmd:
@@ -221,8 +229,7 @@ class CmdParser:
                     postingReturn = ""
                     if returnType != Utility.Func.void:
                         returnVal = Utility.DataTypeMap.mapDefaults(returnType)
-                        postingReturn = Utility.VarParser.inflateSetVar(funcIdentifier, returnType,
-                                                                        returnVal,
+                        postingReturn = Utility.VarParser.inflateDimVar(funcIdentifier, returnType,
                                                                         defaultReturnStack[properName])
 
                     codeContent[Utility.TemplateBuilders.posting_return] = postingReturn
@@ -230,12 +237,13 @@ class CmdParser:
                     parameterNames = []
                     parameterTypes = []
 
-                    for parameter in parameterBlock.split(","):
-                        parameter = parameter.strip()
-                        parameterType, parameterName = parameter.split()
+                    if parameterBlock.strip() != "":
+                        for parameter in parameterBlock.split(","):
+                            parameter = parameter.strip()
+                            parameterType, parameterName = parameter.split()
 
-                        parameterNames.append(parameterName)
-                        parameterTypes.append(parameterType)
+                            parameterNames.append(parameterName)
+                            parameterTypes.append(parameterType)
 
                     localDataBuilding = Utility.VarParser.inflatePushVarsStack(
                         data.resolveStackKey(None)) + "\n"
@@ -285,28 +293,29 @@ class CmdParser:
 
                     argCount = 0
 
-                    for arg in argumentsBlock.split(","):
-                        if argCount >= len(func.parameters):
-                            raise Exception("Function '{}' expects {} arguments only.".format(
-                                funcIdentifier, len(func.parameters)))
+                    if argumentsBlock.strip() != "":
+                        for arg in argumentsBlock.split(","):
+                            if argCount >= len(func.parameters):
+                                raise Exception("Function '{}' expects {} arguments only.".format(
+                                    funcIdentifier, len(func.parameters)))
 
-                        arg = arg.strip()
+                            arg = arg.strip()
 
-                        parameterType = func.parameterTypes[argCount]
-                        parameterName = func.parameters[argCount]
+                            parameterType = func.parameterTypes[argCount]
+                            parameterName = func.parameters[argCount]
 
-                        buildingArgs += Utility.VarParser.inflateDimVar(parameterName,
-                                                                        parameterType,
-                                                                        defaultArgsStack[properName])
-                        buildingArgs += "\n"
+                            buildingArgs += Utility.VarParser.inflateDimVar(parameterName,
+                                                                            parameterType,
+                                                                            defaultArgsStack[properName])
+                            buildingArgs += "\n"
 
-                        # --- Append funcName to arg here and in func's retriever if you need it ---
+                            # --- Append funcName to arg here and in func's retriever if you need it ---
 
-                        getter = Utility.InstructionParser.resolveExpression(data, arg)
-                        poster = Utility.VarParser.inflateSetVar(parameterName, parameterType,
-                                                                 getter, defaultArgsStack[properName])
-                        passingArgs += poster + "\n"
-                        argCount += 1
+                            getter = Utility.InstructionParser.resolveExpression(data, arg)
+                            poster = Utility.VarParser.inflateSetVar(parameterName, parameterType,
+                                                                     getter, defaultArgsStack[properName])
+                            passingArgs += poster + "\n"
+                            argCount += 1
 
                     tail = "\n{}.setFunction({});".format(cmdId, func.cmdId)
                     codeContent[Utility.TemplateBuilders.build_args] = buildingArgs
@@ -367,21 +376,26 @@ class CmdParser:
                     codeContent[Utility.TemplateBuilders.input_type] = processedInputType
                     codeContent[Utility.TemplateBuilders.posting_input] = postingInput
 
-                if type != Utility.Command.impasse:
-                    codeContent[Utility.TemplateBuilders.execution] = CmdParser.resolve_instructions(data,
-                                                                                                 content)
-                    if addCarbonCode:
-                        ccCmdBound = ccLineBounds[data.cmdCount]
-                        start, end = ccCmdBound.start, ccCmdBound.end
+                elif type == Utility.Command.impasse:
+                    codeContent[Utility.TemplateBuilders.execution_overhead] += \
+                    Utility.VarParser.inflatePopVarsStack(defaultStack[properName])
 
-                        codeContent[
-                            Utility.TemplateBuilders.execution_overhead] += Utility.InstructionParser.evalHighlight(
-                            data, "{} @ {} - {}".format(carbonCode[shortHand], start, end)
-                        ) + "\n"
-                else:
-                    codeContent[Utility.TemplateBuilders.execution] = ""
+                    codeContent[Utility.TemplateBuilders.execution_overhead] += \
+                        "\n" + Utility.LogParser.inflateLog("Algorithm Terminated")
+
+                if addCarbonCode:
+                    ccCmdBound = ccLineBounds[data.cmdCount]
+                    start, end = ccCmdBound.start, ccCmdBound.end
+
+                    codeContent[
+                        Utility.TemplateBuilders.execution_overhead] += Utility.InstructionParser.evalHighlight(
+                        data, "{} @ {} - {}".format(carbonCode[shortHand], start, end)
+                    ) + "\n"
 
                 template = Utility.Templates.getTemplate(type)
+                codeContent[Utility.TemplateBuilders.execution] = CmdParser.resolve_instructions(data,
+                                                                                                 content)
+
                 output += template.format(**codeContent)
 
                 if tail != "":
@@ -431,7 +445,6 @@ class CmdParser:
         ifHeadsStack = []
         whileHeadsStack = []
 
-        beforeFuncHead = None
         prevFuncHead = None
 
         output = ""

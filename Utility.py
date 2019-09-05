@@ -741,7 +741,7 @@ class CodeUnitParser:
                     values += " - {}".format(lineCount)
 
             if values == "!":
-                statement = CodeUnitParser.inflateGetCodeUnit(codeUnitKey) + \
+                statement += CodeUnitParser.inflateGetCodeUnit(codeUnitKey) + \
                             ".highlight(null)"
 
             else:
@@ -994,7 +994,11 @@ class InstructionParser:
             operator = directives[opCode]
             output = operator(data, operand)
 
-            return re.sub(r"\\<", r"<", output)
+            output = re.sub(r"\\>", r">", output)
+            output = re.sub(r"\\<", r"<", output)
+            output = re.sub(r"\\;", r";", output)
+
+            return output
 
         except Exception as e:
             raise Exception("Instruction '{}' at cmd {} could not be parsed: ".format(
@@ -1040,19 +1044,34 @@ class InstructionParser:
 class LogParser:
     @staticmethod
     def eval(data, logText):
-        logInjPattern = re.compile(r"(?<!\\)<([\w_,\s-]*)\s*:\s*([\w_\",=\s-]*)(?<!\\)>")
+        injPattern = re.compile(r"(?<!\\):",
+                             re.DOTALL)
 
         while True:
-            match = logInjPattern.search(logText)
-            if match is None:
+            spans = getAtLevel("<", ">", logText, 1)
+
+            if spans is None:
                 break
 
-            name, log_id = match.group(1).split(",")
+            spans = [span if injPattern.search(logText[span[0]:span[1]]) is not None else None for span in
+                     spans]
+            spans = list(filter(lambda a: a is not None, spans))
+
+            if spans == []:
+                break
+
+            start, end = spans.pop()
+            currentExp = logText[start + 1:end - 1]
+
+            match = injPattern.search(currentExp)
+            splitterStart, splitterEnd = match.span()
+            header, content = currentExp[:splitterStart], currentExp[splitterEnd:]
+
+            name, log_id = header.split(",")
 
             name = name.strip()
             log_id = log_id.strip()
 
-            content = match.group(2)
             attributes = resolveAttrFromContent(content)
 
             for log in data.logs:
@@ -1065,15 +1084,11 @@ class LogParser:
             stripPattern = re.compile(r"\s*(.*)\s*", re.DOTALL)
             text = stripPattern.sub(lambda m: m.group(1), text)
 
-            text = re.sub(r"\n", r"\<br\>", text)
-
-            start, end = match.span()
             try:
                 logText = logText[:start] + text.format(**attributes) + logText[end:]
+
             except Exception as e:
                 raise Exception("Error when parsing log '{}'\n".format(text) + str(e))
-
-        print("Log : {}".format(logText))
 
         while True:
             spans = getAtLevel("<", ">", logText, 1)
@@ -1087,15 +1102,17 @@ class LogParser:
 
                 logText = logText[:start] + '" + {} + "'.format(evaluation) + logText[end:]
 
+        logText= re.sub(r"\n", r"\<br\>", logText)
+
         logText = re.sub(r"(?<!\\)\[(.*?)(?<!\\)\]", lambda m: r"\<" + m.group(1) + r"\>", logText)
 
-        logText = re.sub(r"\\>", r">", logText)
-        logText = re.sub(r"\\<", r"<", logText)
+        # logText = re.sub(r"\\>", r">", logText)
+        # logText = re.sub(r"\\<", r"<", logText)
 
         return logText
 
     @staticmethod
-    def inflateLog(data, log):
+    def inflateLog(log):
         return "log(\"{}\", false);".format(log)
 
     @staticmethod
@@ -1105,7 +1122,7 @@ class LogParser:
     @staticmethod
     def evalLog(data, log):
         resolvedLog = LogParser.eval(data, log)
-        return LogParser.inflateLog(data, resolvedLog)
+        return LogParser.inflateLog(resolvedLog)
 
     @staticmethod
     def evalOutput(data, log):
