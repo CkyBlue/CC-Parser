@@ -4,9 +4,9 @@ import re
 properName = "Proper Name"
 shortHand = "Short Hand"
 
-defaultStack = {shortHand: "l", properName: "Locals"}
-defaultArgsStack = {shortHand: "a", properName: "args"}
-defaultReturnStack = {shortHand: "r", properName: "return"}
+defaultStack = {shortHand: "v", properName: "Variables"}
+defaultArgsStack = {shortHand: "a", properName: "__args"}
+defaultReturnStack = {shortHand: "r", properName: "__return"}
 
 # Config
 key_for_fetching_return = "*RETURN"
@@ -505,7 +505,15 @@ class VarParser:
     @staticmethod
     def evalBuildVarsStack(data, shortHand, properName):
         data.addVarStack(shortHand, properName)
-        return "buildVarStack(\"{}\");".format(properName)
+
+        if properName[:2] == "__":
+            output = "buildVarStack(\"{}\", false);"
+
+        else:
+            output = "buildVarStack(\"{}\");"
+
+        output = output.format(properName)
+        return output
 
     @staticmethod
     def evalPushVarsStack(data, stackKey):
@@ -715,10 +723,19 @@ class CodeUnit:
 
 class CodeUnitParser:
     # Config
-    tabSpaceEqv = 8
+    tabSpaceEqv = 4
 
     @staticmethod
     def evalHighlight(data, expression):
+        return CodeUnitParser.injectHighlightingInto(data, expression, "highlight({})")
+
+    @staticmethod
+    def evalRunningIndicator(data, expression):
+        return CodeUnitParser.injectHighlightingInto(data, expression, "highlight({}, "
+                                                                       "HighLightingLevel.Secondary)")
+
+    @staticmethod
+    def injectHighlightingInto(data, expression, formattable):
         codeUnitKey, values = expression.split("@")
 
         codeUnitKey, values = codeUnitKey.strip(), values.strip()
@@ -727,8 +744,7 @@ class CodeUnitParser:
         if codeUnitKey != "*":
             codeUnitKeys.append(data.resolveCodeUnitKey(codeUnitKey))
         else:
-            for unitKeyProperName in data.highLighterKeys.values():
-                codeUnitKeys.append(unitKeyProperName)
+            codeUnitKeys = CodeUnitParser.getCodeUnits(data)
 
         statement = ""
         for codeUnitKey in codeUnitKeys:
@@ -742,7 +758,7 @@ class CodeUnitParser:
 
             if values == "!":
                 statement += CodeUnitParser.inflateGetCodeUnit(codeUnitKey) + \
-                            ".highlight(null)"
+                             "." + formattable.format("null")
 
             else:
                 lineNos = []
@@ -760,8 +776,9 @@ class CodeUnitParser:
                 lineNos = set([str(lineNo) for lineNo in lineNos])
                 lineNoStatement = ", ".join(lineNos)
 
+                arg = "new int[]{{ {} }}".format(lineNoStatement)
                 statement += CodeUnitParser.inflateGetCodeUnit(codeUnitKey) + \
-                            ".highlight(new int[]{{ {} }})".format(lineNoStatement)
+                             "." + formattable.format(arg)
 
             statement += ";\n"
 
@@ -785,6 +802,39 @@ class CodeUnitParser:
             output += CodeUnitParser.evalSetCodeUnitText(data, srcText, unitName) + "\n\n"
 
         return output + "\n"
+
+    @staticmethod
+    def getCodeUnits(data):
+        codeUnitKeys = []
+        for unitKeyProperName in data.highLighterKeys.values():
+            codeUnitKeys.append(unitKeyProperName)
+
+        return codeUnitKeys
+
+    @staticmethod
+    def evalHide(data, expression):
+        return CodeUnitParser.methodOntoCodeUnit(data, expression, "hideSourceCodeUnit")
+
+    @staticmethod
+    def evalShow(data, expression):
+        return CodeUnitParser.methodOntoCodeUnit(data, expression, "showSourceCodeUnit")
+
+    @staticmethod
+    def methodOntoCodeUnit(data, expression, actionMethodName):
+        codeUnitKey = expression.strip()
+
+        codeUnitKeys = []
+        if codeUnitKey != "*":
+            codeUnitKeys.append(data.resolveCodeUnitKey(codeUnitKey))
+        else:
+            codeUnitKeys = CodeUnitParser.getCodeUnits(data)
+
+        statement = ""
+        for codeUnitKey in codeUnitKeys:
+            statement += actionMethodName + "(\"{}\")".format(codeUnitKey)
+            statement += ";\n"
+
+        return statement
 
     @staticmethod
     def inflateGetCodeUnit(codeUnit):
@@ -823,6 +873,7 @@ class OpCodes:
     show = "SHOW"
     log = "LOG"
     output = "OUTPUT"
+    src = "SRC"
 
 
 class InstructionParser:
@@ -830,7 +881,7 @@ class InstructionParser:
                OpCodes.dim, OpCodes.build,
                OpCodes.light, OpCodes.hide,
                OpCodes.show, OpCodes.log,
-               OpCodes.output]
+               OpCodes.output, OpCodes.src]
 
     defaultOpCode = OpCodes.eval
 
@@ -927,6 +978,10 @@ class InstructionParser:
         return CodeUnitParser.evalHighlight(data, exp)
 
     @staticmethod
+    def evalSrcPos(data, exp):
+        return CodeUnitParser.evalRunningIndicator(data, exp)
+
+    @staticmethod
     def evalLog(data, exp):
         return LogParser.evalLog(data, exp)
 
@@ -943,6 +998,14 @@ class InstructionParser:
         actualName = match.group(2)
 
         return VarParser.evalBuildVarsStack(data, shortHand, actualName)
+
+    @staticmethod
+    def evalHide(data, exp):
+        return CodeUnitParser.evalHide(data, exp)
+
+    @staticmethod
+    def evalShow(data, exp):
+        return CodeUnitParser.evalShow(data, exp)
 
     @staticmethod
     def evalSet(data, exp):
@@ -988,8 +1051,10 @@ class InstructionParser:
                           OpCodes.light: InstructionParser.evalHighlight,
                           OpCodes.log: InstructionParser.evalLog,
                           OpCodes.output: InstructionParser.evalOutput,
-                          OpCodes.hide: None,
-                          OpCodes.show: None}
+                          OpCodes.hide: InstructionParser.evalHide,
+                          OpCodes.show: InstructionParser.evalShow,
+                          OpCodes.src: InstructionParser.evalSrcPos,
+                          }
 
             operator = directives[opCode]
             output = operator(data, operand)

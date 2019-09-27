@@ -1,15 +1,19 @@
-import re, os, copy, xml.etree.ElementTree as ET
+import copy
+import os
+import re
+import xml.etree.ElementTree as ET
+
 import Utility
 
 # Configurations
 
-properName = Utility.properName
+properName: str = Utility.properName
 shortHand = Utility.shortHand
 
 source_name = 'main.carbon'
 output_name = 'output.txt'
 
-addCarbonCode = True
+addCarbonCode = False
 carbonCode = {shortHand: "cc", properName: "CarbonCode"}
 
 defaultStack = Utility.defaultStack
@@ -21,9 +25,11 @@ initPort = "__init__"
 
 defaultAlgorithmTree = "algorithmTree"
 
+
 class DirectiveTypes:
     src = "src"
     log = "log"
+
 
 class Attributes:
     directive_type = "directive_type"
@@ -32,12 +38,14 @@ class Attributes:
     handler = "handler"
     keys = "keys"
 
+
 class CmdParser:
     reactiveCmdTypes = [Utility.Command.endIf, Utility.Command.elseIf, Utility.Command.ifNot] + [
         Utility.Command.endWhile] + [Utility.Command.endFunc, Utility.Command.func]
 
     allCmdTypes = reactiveCmdTypes + [Utility.Command.doIf, Utility.Command.doWhile, Utility.Command.returner,
-                                      Utility.Command.cmd, Utility.Command.call, Utility.Command.input] + [Utility.Command.impasse]
+                                      Utility.Command.cmd, Utility.Command.call, Utility.Command.input] + [
+                      Utility.Command.impasse]
 
     defaultCmdType = Utility.Command.cmd
 
@@ -125,11 +133,21 @@ class CmdParser:
 
         output = ""
         output += Utility.OpCodes.build + ": {}, {};\n".format(defaultStack[shortHand],
-                                                              defaultStack[properName])
+                                                               defaultStack[properName])
         output += Utility.OpCodes.build + ": {}, {};\n".format(defaultReturnStack[shortHand],
-                                                              defaultReturnStack[properName])
+                                                               defaultReturnStack[properName])
         output += Utility.OpCodes.build + ": {}, {};\n".format(defaultArgsStack[shortHand],
-                                                              defaultArgsStack[properName])
+                                                               defaultArgsStack[properName])
+        return output
+
+    @staticmethod
+    def ordinary_overhead_instructions():
+        # Todo Use a seperator constant
+
+        output = ""
+        output += Utility.OpCodes.light + ": * @ !;\n"
+        output += Utility.OpCodes.src + ": * @ !;\n"
+
         return output
 
     @staticmethod
@@ -151,8 +169,11 @@ class CmdParser:
         initCode = CmdParser.initializer_overhead_instructions()
         initOverhead = Utility.InstructionParser.parse(data, initCode) + initOverhead
 
+        ordinaryOverhead = Utility.InstructionParser.parse(data,
+                                                           CmdParser.ordinary_overhead_instructions())
+
         output = ""
-        openFunc = None # Used when building Return Cmds. Directs where to post returned value
+        openFunc = None  # Used when building Return Cmds. Directs where to post returned value
 
         try:
             for match in cmdMatches:
@@ -186,8 +207,8 @@ class CmdParser:
 
                 # <------ Handling port
                 if port is not None:
-                    codeContent[Utility.TemplateBuilders.execution_overhead] += \
-                        "clearOutput();\n"
+                    # codeContent[Utility.TemplateBuilders.execution_overhead] += \
+                    #     "clearOutput();\n"
 
                     if port == initPort:
                         codeContent[Utility.TemplateBuilders.execution_overhead] += initOverhead
@@ -198,6 +219,9 @@ class CmdParser:
                     codeContent[Utility.TemplateBuilders.execution_overhead] += \
                         "\n" + Utility.VarParser.inflatePushVarsStack(defaultStack[properName])
                 # ------>
+
+                # Overhead for clearing highlighting
+                codeContent[Utility.TemplateBuilders.execution_overhead] += ordinaryOverhead
 
                 if type == Utility.Command.cmd:
                     pass
@@ -350,7 +374,6 @@ class CmdParser:
                                                                         returnVal,
                                                                         defaultReturnStack[properName])
 
-
                     codeContent[Utility.TemplateBuilders.posting_return] = postingReturn
 
                 elif type == Utility.Command.input:
@@ -378,7 +401,7 @@ class CmdParser:
 
                 elif type == Utility.Command.impasse:
                     codeContent[Utility.TemplateBuilders.execution_overhead] += \
-                    Utility.VarParser.inflatePopVarsStack(defaultStack[properName])
+                        Utility.VarParser.inflatePopVarsStack(defaultStack[properName])
 
                     codeContent[Utility.TemplateBuilders.execution_overhead] += \
                         "\n" + Utility.LogParser.inflateLog("Algorithm Terminated")
@@ -602,7 +625,6 @@ class CmdParser:
 
         directives = []
         for directiveMatch in directivePattern.finditer(code):
-
             contentText = directiveMatch.group(1)
             attributes = Utility.resolveAttrFromContent(contentText)
             directives.append(attributes)
@@ -652,6 +674,7 @@ class CmdParser:
         output += CmdParser.chain(data)
 
         return output
+
 
 dir = r"C:\Users\sakrit\OneDrive\Carbon 2.0\TestCC"
 
